@@ -7,7 +7,7 @@ import scipy as sp
 class FuzzySet(ABC):
     '''Abstract Class for a generic fuzzy set'''
     @abstractmethod
-    def __call__(self, arg) -> np.number:
+    def __call__(self, arg):
         pass
 
     @abstractmethod
@@ -524,3 +524,156 @@ class GaussianFuzzyNumber(FuzzyNumber):
             intgr = lambda x: self(x)*np.log(1/self(x)) + (1 - self(x))*np.log2(1/(1-self(x)))
             self.f : np.number = sp.integrate.quad(intgr, self.min, self.max)[0]
             return self.f
+
+class IntuitionisticFuzzySet(FuzzySet):
+    #implements an Intuitionistic Fuzzy Set
+
+    def __init__(self, items, memberships, dynamic=True):
+        '''
+        items: list or array of objects
+        memberships: list or array of pairs, where:
+            the first value represents the memberbership degree
+            the second value represents the non-membership degree
+            (e.g. [[0.2, 0.4], [0.1, 0.0]])
+            if instead of a pair of values, only a single value is provided, that's assumed to be the membership degree, 
+            and the non-membership degree is set to be 1 - the provided value
+        dynamic:  whether the support set is exhaustive or not 
+            (i.e. there exist objects not in items whose membership degree is 0 and non-membership degree is 1)
+        '''
+
+        if  type(items) != list and type(items) != np.ndarray:
+            raise TypeError("items should be list or numpy.array")
+        
+        if type(memberships) != list and type(memberships) != np.ndarray:
+            raise TypeError("memberships should be a list or numpy.array")
+        
+        if len(items) != len(memberships):
+            raise ValueError("items and memberships should have the same size")
+
+        if type(dynamic) != bool:
+            raise TypeError("dynamic should be bool")
+
+        for i, m in enumerate(memberships):
+            if type(m) != list and type(m) != np.ndarray and not np.issubdtype(type(m), np.number):
+                raise TypeError("memberships should be a list or numpy.array of either pairs of floats (e.g. [[0.2, 0.4] ...]) or floats")
+            
+            if type(m) == list or type(m) == np.ndarray:
+                if len(m) > 2:
+                    raise ValueError("memberships should be a list or numpy.array of either pairs of floats (e.g. [[0.2, 0.4] ...]) or floats")
+
+                if not np.issubdtype(type(m[0]), np.number):
+                    raise TypeError("Membership degrees should be floats in [0,1], is %s" % type(m[0]))
+                if m[0] < 0 or m[0] > 1:
+                    raise ValueError("Membership degrees should be floats in [0,1], is %s" % str(m[0]))
+                
+                if len(m) == 2:
+                    if not np.issubdtype(type(m[1]), np.number):
+                        raise TypeError("Non-membership degrees should be floats in [0,1], is %s" % type(m[1]))
+                    if m[1] < 0 or m[1] > 1:
+                        raise ValueError("Non-membership degrees should be floats in [0,1], is %s" % str(m[1]))
+                    if m[0] + m[1] > 1:
+                        raise ValueError("The sum of the membership degree and the non-membership degrees should be less or equal than 1, is %s" % str(m[0]+m[1]))
+                else:
+                    memberships[i] = [m[0], 1-m[0]] 
+
+            if np.issubdtype(type(m), np.number):
+                memberships[i] = np.array([m, 1-m])
+
+        self.items = np.array(items)
+        self.set = dict(zip(items, range(len(items))))
+        self.memberships = np.array(memberships)
+        self.dynamic = dynamic
+
+    def __call__(self, arg) -> np.ndarray:
+        '''
+        Returns a numpy array containing the membership and non-membership degrees or arg
+        '''
+
+        if arg not in self.set.keys():
+            if not self.dynamic:
+                raise ValueError("%s not in the support of the fuzzy set" % str(arg))
+            self.set[arg] = len(self.items)
+            self.items = np.append(self.items, arg)
+            if self.memberships.size == 0:
+                self.memberships = np.array([[0.0, 1.0]])
+            else:
+                self.memberships = np.append(self.memberships, [[0.0, 1.0]], axis=0)
+        
+        return self.memberships[self.set[arg]]
+
+    def __getitem__(self, alpha_beta: np.array) -> np.ndarray:
+        '''
+        Return the alpha, beta cut
+        (set of items whose membership degrees are >= alpha and non-membership degress are <= beta)
+        '''
+        alpha, beta = alpha_beta;
+
+        if not np.issubdtype(type(alpha), np.number):
+            raise TypeError("Alpha should be a float in [0,1], is %s" % type(alpha))
+        if not np.issubdtype(type(beta), np.number):
+            raise TypeError("Beta should be a float in [0,1], is %s" % type(beta))
+
+        if alpha < 0 or alpha > 1:
+            raise ValueError("Alpha should be in [0,1], is %s" % str(alpha))
+        if beta < 0 or beta > 1:
+            raise ValueError("Beta should be in [0,1], is %s" % str(beta))
+        
+        slice = (self.memberships[:,0] >= alpha) & (self.memberships[:,1] <= beta)
+        return self.items[slice]
+
+    def __eq__(self, other: object) -> bool:
+        '''
+        Checks whether two IntuitionisticFuzzySet instances are equal
+        '''
+
+        if (not isinstance(other, IntuitionisticFuzzySet)) and (not isinstance(other, DiscreteFuzzySet)):
+            return NotImplemented
+        
+        other_is_ifs = isinstance(other, IntuitionisticFuzzySet)
+        for v in list(self.set.keys()) + list(other.set.keys()):
+            try:
+                v1 = self(v)
+            except ValueError:
+                return False
+            try:
+                v2 = other(v)
+            except ValueError:
+                return False
+            
+            if not other_is_ifs:
+                v2 = [v2, 1-v2]
+
+            if any(v1 != v2):
+                return False
+
+        return True
+
+    def fuzziness(self) -> np.number:
+        '''
+        Returns the fuzziness
+        '''
+
+        try:
+            return self.f
+        except AttributeError:
+            sum_f = 0
+            for m in self.memberships:
+                hes = (1 - m[0] - m[1])
+                f1 = m[0] + 0.5 * hes
+                f2 = m[1] + 0.5 * hes
+                sum_f += f1*np.log2(f1) + f2*np.log2(f2)
+            self.f = - ( 1 / len(self.memberships)) * sum_f 
+            return self.f
+    
+    def hartley(self) -> np.number:
+        '''
+        Returns the hartley entropy (non-specificity)
+        '''
+ 
+        try:
+            return self.h
+        except AttributeError:
+            alpha = max(self.memberships[:,0])
+            sum_M = np.sum(np.minimum(alpha, 1 - self.memberships[:,1])-alpha)
+            self.h = np.log2(len(self.memberships)+sum_M)/np.log2(len(self.memberships))
+            return self.h
